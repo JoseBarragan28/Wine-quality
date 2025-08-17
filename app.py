@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.inspection import PartialDependenceDisplay
+from sklearn.model_selection import KFold, cross_val_score
 
 
 st.set_page_config(page_title="Wine Advisor Bot", page_icon="🍷", layout="wide")
@@ -511,9 +512,7 @@ with tab4:
         rf.fit(Xp, yp)
         do_cv = st.checkbox("Calcular métricas ", value=False, key="eda_cv_metrics")
         if do_cv:
-            from sklearn.model_selection import KFold, cross_val_score
-
-            
+        
             cv = KFold(n_splits=5, shuffle=True, random_state=111)
 
             mse_scores = -cross_val_score(rf, Xp, yp, cv=cv, scoring="neg_mean_squared_error", n_jobs=-1)
@@ -543,6 +542,138 @@ with tab4:
                 disp = PartialDependenceDisplay.from_estimator(rf, Xp, features=[feat], ax=ax_i)
                 ax_i.set_title(feat, fontsize=10)
             st.pyplot(fig3)
+    # ===================== Fila 4: Clustering (K-Means y DBSCAN) =====================
+st.subheader("Clustering no supervisado")
+
+# --- Selección de variables y preparación ---
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import silhouette_score
+
+st.write("Selecciona las variables a utilizar para agrupar. Se recomienda trabajar con variables numéricas escaladas.")
+vars_cluster = st.multiselect(
+    "Variables para clustering",
+    FEATURES, default=FEATURES, key="eda_cluster_vars"
+)
+
+if len(vars_cluster) < 2:
+    st.info("Selecciona al menos 2 variables para continuar.")
+else:
+    X = df_eda[vars_cluster].copy()
+    mask_ok = ~X.isna().any(axis=1)
+    X = X.loc[mask_ok]
+    tipos_sub = df_eda.loc[mask_ok, "type"].astype(str).values
+
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X.values)
+
+    # PCA para visualización 2D (no para ajustar modelos)
+    pca = PCA(n_components=2, random_state=111)
+    X2 = pca.fit_transform(Xs)
+
+    # --------- K-MEANS ---------
+    st.markdown("### K-Means")
+    c1, c2 = st.columns([1.2, 1], gap="large")
+
+    with c1:
+        st.write("**Método del codo (Elbow)**")
+        max_k = st.slider("Máximo k para el codo", min_value=6, max_value=20, value=10, step=1, key="eda_elbow_maxk")
+        ks = list(range(2, max_k + 1))
+        inercias = []
+
+        for k in ks:
+            km_tmp = KMeans(n_clusters=k, random_state=111, n_init=10)
+            km_tmp.fit(Xs)
+            inercias.append(km_tmp.inertia_)
+
+        fig_elbow, ax_elbow = plt.subplots(figsize=(5.5, 3.3))
+        ax_elbow.plot(ks, inercias, marker="o")
+        ax_elbow.set_xlabel("Número de clusters (k)")
+        ax_elbow.set_ylabel("Inercia (SSE)")
+        ax_elbow.set_title("Curva del codo")
+        ax_elbow.grid(True, alpha=0.3)
+        st.pyplot(fig_elbow)
+
+    with c2:
+        k_sel = st.slider("Selecciona k para K-Means", min_value=2, max_value=max_k, value=min(4, max_k), step=1, key="eda_kmeans_k")
+        km = KMeans(n_clusters=k_sel, random_state=111, n_init=10)
+        labels_km = km.fit_predict(Xs)
+
+        # Métricas
+        sil = silhouette_score(Xs, labels_km) if k_sel >= 2 else float("nan")
+        c21, c22 = st.columns(2)
+        with c21: st.metric("k", k_sel)
+        with c22: st.metric("Silhouette", f"{sil:.4f}")
+
+        # Tamaños de clúster
+        sizes_km = pd.Series(labels_km).value_counts().sort_index()
+        st.write("**Tamaño de clústeres (K-Means)**")
+        st.dataframe(
+            pd.DataFrame({"cluster": sizes_km.index, "n": sizes_km.values}),
+            use_container_width=True, hide_index=True
+        )
+
+    # Dispersión PCA coloreada por clúster (K-Means)
+    fig_km, ax_km = plt.subplots(figsize=(6.2, 4.2))
+    sc_km = ax_km.scatter(X2[:, 0], X2[:, 1], c=labels_km, s=20, alpha=0.85)
+    ax_km.set_xlabel("PCA 1")
+    ax_km.set_ylabel("PCA 2")
+    ax_km.set_title("K-Means – Proyección PCA (2D)")
+    # leyenda de clústeres
+    handles, _ = sc_km.legend_elements(prop="colors", alpha=0.6)
+    ax_km.legend(handles, [f"Cluster {i}" for i in range(k_sel)], title="Clusters", loc="best")
+    st.pyplot(fig_km)
+
+    st.divider()
+
+    # --------- DBSCAN ---------
+    st.markdown("### DBSCAN")
+    col_db_l, col_db_r = st.columns(2, gap="large")
+
+    with col_db_l:
+        st.write("**Hiperparámetros** (datos estandarizados)")
+        eps = st.slider("eps", min_value=0.05, max_value=5.0, value=0.8, step=0.05, key="eda_dbscan_eps")
+        min_samples = st.slider("min_samples", min_value=3, max_value=50, value=10, step=1, key="eda_dbscan_min")
+        db = DBSCAN(eps=eps, min_samples=min_samples, n_jobs=-1)
+        labels_db = db.fit_predict(Xs)
+
+        # Métricas
+        n_clusters_db = len(set(labels_db)) - (1 if -1 in labels_db else 0)
+        has_clusters = n_clusters_db >= 2 and (labels_db != -1).sum() > 0
+        sil_db = silhouette_score(Xs[labels_db != -1], labels_db[labels_db != -1]) if has_clusters else float("nan")
+
+        cdb1, cdb2 = st.columns(2)
+        with cdb1: st.metric("# Clústeres (≠-1)", n_clusters_db)
+        with cdb2: st.metric("Silhouette (sin ruido)", "N/A" if not has_clusters else f"{sil_db:.4f}")
+
+        # Tamaños (incluye ruido)
+        sizes_db = pd.Series(labels_db).value_counts().sort_index()
+        tabla_db = pd.DataFrame({
+            "cluster": ["ruido (-1)" if i == -1 else int(i) for i in sizes_db.index],
+            "n": sizes_db.values
+        })
+        st.write("**Tamaño de clústeres (DBSCAN)**")
+        st.dataframe(tabla_db, use_container_width=True, hide_index=True)
+
+    with col_db_r:
+        # Dispersión PCA coloreada por etiqueta DBSCAN
+        fig_db, ax_db = plt.subplots(figsize=(6.2, 4.2))
+        # Colorear ruido en negro y con marcador 'x'
+        mask_noise = labels_db == -1
+        if (~mask_noise).any():
+            sc_db = ax_db.scatter(X2[~mask_noise, 0], X2[~mask_noise, 1],
+                                  c=labels_db[~mask_noise], s=20, alpha=0.85)
+            handles, _ = sc_db.legend_elements(prop="colors", alpha=0.6)
+            ax_db.legend(handles + [plt.Line2D([0], [0], marker='x', linestyle='None', label='Ruido', color='black')],
+                         [* [f"Cluster {i}" for i in sorted(set(labels_db) - {-1})], "Ruido"],
+                         title="Etiquetas", loc="best")
+        if mask_noise.any():
+            ax_db.scatter(X2[mask_noise, 0], X2[mask_noise, 1], c="black", marker="x", s=20, alpha=0.7)
+        ax_db.set_xlabel("PCA 1")
+        ax_db.set_ylabel("PCA 2")
+        ax_db.set_title("DBSCAN – Proyección PCA (2D)")
+        st.pyplot(fig_db)
     else:
         st.info("Si lo deseas, puedes subir un documento CSV o Excel con la información "
               "de un conjuntos de vinos para analizar la calidad del grupo. Incluye exactamente estas columnas "
