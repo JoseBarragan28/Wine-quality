@@ -9,3 +9,4 @@ mistralai
 openpyxl
 xlrd==1.2.0
 matplotlib
+plotly
