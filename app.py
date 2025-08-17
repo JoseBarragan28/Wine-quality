@@ -542,139 +542,174 @@ with tab4:
                 disp = PartialDependenceDisplay.from_estimator(rf, Xp, features=[feat], ax=ax_i)
                 ax_i.set_title(feat, fontsize=10)
             st.pyplot(fig3)
-            # ===================== Fila 4: Clustering (K-Means y DBSCAN) =====================
-        st.subheader("Clustering no supervisado")
 
-        # --- Selección de variables y preparación ---
+                # ===================== Fila 4: Clustering (K-Means y DBSCAN) =====================
+        # Imports needed for this block (kept local to avoid polluting global scope)
         from sklearn.preprocessing import StandardScaler
         from sklearn.decomposition import PCA
         from sklearn.cluster import KMeans, DBSCAN
         from sklearn.metrics import silhouette_score
+        import plotly.express as px  # interactive 3D scatter
 
-        st.write("Selecciona las variables a utilizar para agrupar. Se recomienda trabajar con variables numéricas escaladas.")
-        vars_cluster = st.multiselect(
-            "Variables para clustering",
-            FEATURES, default=FEATURES, key="eda_cluster_vars"
+        st.subheader("Clustering no supervisado")
+
+        # --- Data preparation (always use all FEATURES) ---
+        # Use all FEATURES, drop rows with NaNs on those cols
+        vars_cluster = FEATURES  # always all variables
+        X = df_eda[vars_cluster].copy()
+        mask_ok = ~X.isna().any(axis=1)
+        X = X.loc[mask_ok]
+
+        # Standardize features (KMeans/DBSCAN sensitive to scale)
+        scaler = StandardScaler()
+        Xs = scaler.fit_transform(X.values)
+
+        # PCA only for visualization (models are trained on full standardized space)
+        pca2 = PCA(n_components=2, random_state=111)
+        X2 = pca2.fit_transform(Xs)
+        pca3 = PCA(n_components=3, random_state=111)
+        X3 = pca3.fit_transform(Xs)
+
+        st.caption("Se usan todas las variables numéricas estandarizadas. PCA se emplea solo para visualización 2D/3D.")
+
+        # --------- K-MEANS ---------
+        st.markdown("### K-Means")
+
+        # Elbow curve (small figure)
+        c1, c2 = st.columns([1.1, 1], gap="large")
+
+        with c1:
+            st.write("**Método del codo (Elbow)**")
+            # Small max range; user can extend if needed
+            max_k = st.slider("Máximo k para el codo", min_value=6, max_value=20, value=10, step=1, key="eda_elbow_maxk_small")
+            ks = list(range(2, max_k + 1))
+            inercias = []
+            # Compute SSE across k
+            for k in ks:
+                km_tmp = KMeans(n_clusters=k, random_state=111, n_init=10)
+                km_tmp.fit(Xs)
+                inercias.append(km_tmp.inertia_)
+            # Small-sized plot
+            fig_elbow, ax_elbow = plt.subplots(figsize=(4.5, 3.0))  # small like other tabs
+            ax_elbow.plot(ks, inercias, marker="o")
+            ax_elbow.set_xlabel("Número de clusters (k)")
+            ax_elbow.set_ylabel("Inercia (SSE)")
+            ax_elbow.set_title("Curva del codo")
+            ax_elbow.grid(True, alpha=0.3)
+            st.pyplot(fig_elbow)
+
+        with c2:
+            # k selection
+            k_sel = st.slider("Selecciona k para K-Means", min_value=2, max_value=max_k, value=min(4, max_k), step=1, key="eda_kmeans_k_small")
+            km = KMeans(n_clusters=k_sel, random_state=111, n_init=10)
+            labels_km = km.fit_predict(Xs)
+
+            # Silhouette (only meaningful for k>=2)
+            sil = silhouette_score(Xs, labels_km) if k_sel >= 2 else float("nan")
+            c21, c22 = st.columns(2)
+            with c21: st.metric("k", k_sel)
+            with c22: st.metric("Silhouette", f"{sil:.4f}")
+
+            # Cluster sizes
+            sizes_km = pd.Series(labels_km).value_counts().sort_index()
+            st.write("**Tamaño de clústeres (K-Means)**")
+            st.dataframe(
+                pd.DataFrame({"cluster": sizes_km.index, "n": sizes_km.values}),
+                use_container_width=True, hide_index=True
+            )
+
+        # 2D PCA scatter (small)
+        fig_km2d, ax_km2d = plt.subplots(figsize=(4.6, 3.0))  # small
+        sc_km = ax_km2d.scatter(X2[:, 0], X2[:, 1], c=labels_km, s=16, alpha=0.9)
+        ax_km2d.set_xlabel("PCA 1")
+        ax_km2d.set_ylabel("PCA 2")
+        ax_km2d.set_title("K-Means – Proyección PCA (2D)")
+        handles, _ = sc_km.legend_elements(prop="colors", alpha=0.6)
+        ax_km2d.legend(handles, [f"Cluster {i}" for i in range(k_sel)], title="Clusters", loc="best", fontsize=8)
+        st.pyplot(fig_km2d)
+
+        # 3D interactive PCA scatter (Plotly)
+        st.write("**K-Means – Proyección PCA (3D, interactiva)**")
+        fig_km3d = px.scatter_3d(
+            x=X3[:, 0], y=X3[:, 1], z=X3[:, 2],
+            color=labels_km.astype(str),
+            labels={"x": "PCA 1", "y": "PCA 2", "z": "PCA 3", "color": "Cluster"},
+            opacity=0.85,
         )
+        fig_km3d.update_traces(marker=dict(size=3))
+        fig_km3d.update_layout(height=360, margin=dict(l=0, r=0, t=30, b=0), title="K-Means – PCA 3D (gira/zooma con el mouse)")
+        st.plotly_chart(fig_km3d, use_container_width=True)
 
-        if len(vars_cluster) < 2:
-            st.info("Selecciona al menos 2 variables para continuar.")
-        else:
-            X = df_eda[vars_cluster].copy()
-            mask_ok = ~X.isna().any(axis=1)
-            X = X.loc[mask_ok]
-            tipos_sub = df_eda.loc[mask_ok, "type"].astype(str).values
+        st.divider()
 
-            scaler = StandardScaler()
-            Xs = scaler.fit_transform(X.values)
+        # --------- DBSCAN ---------
+        st.markdown("### DBSCAN")
 
-            # PCA para visualización 2D (no para ajustar modelos)
-            pca = PCA(n_components=2, random_state=111)
-            X2 = pca.fit_transform(Xs)
+        col_db_l, col_db_r = st.columns(2, gap="large")
 
-            # --------- K-MEANS ---------
-            st.markdown("### K-Means")
-            c1, c2 = st.columns([1.2, 1], gap="large")
+        with col_db_l:
+            st.write("**Hiperparámetros** (datos estandarizados)")
+            # Typical starting points; tune interactively
+            eps = st.slider("eps", min_value=0.05, max_value=5.0, value=0.8, step=0.05, key="eda_dbscan_eps_small")
+            min_samples = st.slider("min_samples", min_value=3, max_value=50, value=10, step=1, key="eda_dbscan_min_small")
+            db = DBSCAN(eps=eps, min_samples=min_samples)
+            labels_db = db.fit_predict(Xs)
 
-            with c1:
-                st.write("**Método del codo (Elbow)**")
-                max_k = st.slider("Máximo k para el codo", min_value=6, max_value=20, value=10, step=1, key="eda_elbow_maxk")
-                ks = list(range(2, max_k + 1))
-                inercias = []
+            # Cluster count excl. noise (-1)
+            n_clusters_db = len(set(labels_db)) - (1 if -1 in labels_db else 0)
+            has_clusters = n_clusters_db >= 2 and (labels_db != -1).sum() > 0
+            sil_db = silhouette_score(Xs[labels_db != -1], labels_db[labels_db != -1]) if has_clusters else float("nan")
 
-                for k in ks:
-                    km_tmp = KMeans(n_clusters=k, random_state=111, n_init=10)
-                    km_tmp.fit(Xs)
-                    inercias.append(km_tmp.inertia_)
+            cdb1, cdb2 = st.columns(2)
+            with cdb1: st.metric("# Clústeres (≠-1)", n_clusters_db)
+            with cdb2: st.metric("Silhouette (sin ruido)", "N/A" if not has_clusters else f"{sil_db:.4f}")
 
-                fig_elbow, ax_elbow = plt.subplots(figsize=(5.5, 3.3))
-                ax_elbow.plot(ks, inercias, marker="o")
-                ax_elbow.set_xlabel("Número de clusters (k)")
-                ax_elbow.set_ylabel("Inercia (SSE)")
-                ax_elbow.set_title("Curva del codo")
-                ax_elbow.grid(True, alpha=0.3)
-                st.pyplot(fig_elbow)
+            # Sizes incl. noise
+            sizes_db = pd.Series(labels_db).value_counts().sort_index()
+            tabla_db = pd.DataFrame({
+                "cluster": ["ruido (-1)" if i == -1 else int(i) for i in sizes_db.index],
+                "n": sizes_db.values
+            })
+            st.write("**Tamaño de clústeres (DBSCAN)**")
+            st.dataframe(tabla_db, use_container_width=True, hide_index=True)
 
-            with c2:
-                k_sel = st.slider("Selecciona k para K-Means", min_value=2, max_value=max_k, value=min(4, max_k), step=1, key="eda_kmeans_k")
-                km = KMeans(n_clusters=k_sel, random_state=111, n_init=10)
-                labels_km = km.fit_predict(Xs)
-
-                # Métricas
-                sil = silhouette_score(Xs, labels_km) if k_sel >= 2 else float("nan")
-                c21, c22 = st.columns(2)
-                with c21: st.metric("k", k_sel)
-                with c22: st.metric("Silhouette", f"{sil:.4f}")
-
-                # Tamaños de clúster
-                sizes_km = pd.Series(labels_km).value_counts().sort_index()
-                st.write("**Tamaño de clústeres (K-Means)**")
-                st.dataframe(
-                    pd.DataFrame({"cluster": sizes_km.index, "n": sizes_km.values}),
-                    use_container_width=True, hide_index=True
+        with col_db_r:
+            # 2D PCA scatter (small)
+            fig_db2d, ax_db2d = plt.subplots(figsize=(4.6, 3.0))  # small
+            mask_noise = labels_db == -1
+            # non-noise points
+            if (~mask_noise).any():
+                sc = ax_db2d.scatter(X2[~mask_noise, 0], X2[~mask_noise, 1],
+                                    c=labels_db[~mask_noise], s=16, alpha=0.9)
+                handles, _ = sc.legend_elements(prop="colors", alpha=0.6)
+                ax_db2d.legend(
+                    handles + [plt.Line2D([0], [0], marker='x', linestyle='None', label='Ruido', color='black')],
+                    [* [f"Cluster {i}" for i in sorted(set(labels_db) - {-1})], "Ruido"],
+                    title="Etiquetas", loc="best", fontsize=8
                 )
+            # noise points
+            if mask_noise.any():
+                ax_db2d.scatter(X2[mask_noise, 0], X2[mask_noise, 1], c="black", marker="x", s=18, alpha=0.8)
+            ax_db2d.set_xlabel("PCA 1")
+            ax_db2d.set_ylabel("PCA 2")
+            ax_db2d.set_title("DBSCAN – Proyección PCA (2D)")
+            st.pyplot(fig_db2d)
 
-            # Dispersión PCA coloreada por clúster (K-Means)
-            fig_km, ax_km = plt.subplots(figsize=(6.2, 4.2))
-            sc_km = ax_km.scatter(X2[:, 0], X2[:, 1], c=labels_km, s=20, alpha=0.85)
-            ax_km.set_xlabel("PCA 1")
-            ax_km.set_ylabel("PCA 2")
-            ax_km.set_title("K-Means – Proyección PCA (2D)")
-            # leyenda de clústeres
-            handles, _ = sc_km.legend_elements(prop="colors", alpha=0.6)
-            ax_km.legend(handles, [f"Cluster {i}" for i in range(k_sel)], title="Clusters", loc="best")
-            st.pyplot(fig_km)
+        # 3D interactive PCA scatter (Plotly) for DBSCAN
+        st.write("**DBSCAN – Proyección PCA (3D, interactiva)**")
+        labels_db_str = ["-1" if i == -1 else str(i) for i in labels_db]
+        fig_db3d = px.scatter_3d(
+            x=X3[:, 0], y=X3[:, 1], z=X3[:, 2],
+            color=labels_db_str,
+            labels={"x": "PCA 1", "y": "PCA 2", "z": "PCA 3", "color": "Etiqueta"},
+            opacity=0.85,
+        )
+        fig_db3d.update_traces(marker=dict(size=3))
+        fig_db3d.update_layout(height=360, margin=dict(l=0, r=0, t=30, b=0), title="DBSCAN – PCA 3D (gira/zooma con el mouse)")
+        st.plotly_chart(fig_db3d, use_container_width=True)
+   
 
-            st.divider()
 
-            # --------- DBSCAN ---------
-            st.markdown("### DBSCAN")
-            col_db_l, col_db_r = st.columns(2, gap="large")
-
-            with col_db_l:
-                st.write("**Hiperparámetros** (datos estandarizados)")
-                eps = st.slider("eps", min_value=0.05, max_value=5.0, value=0.8, step=0.05, key="eda_dbscan_eps")
-                min_samples = st.slider("min_samples", min_value=3, max_value=50, value=10, step=1, key="eda_dbscan_min")
-                db = DBSCAN(eps=eps, min_samples=min_samples, n_jobs=-1)
-                labels_db = db.fit_predict(Xs)
-
-                # Métricas
-                n_clusters_db = len(set(labels_db)) - (1 if -1 in labels_db else 0)
-                has_clusters = n_clusters_db >= 2 and (labels_db != -1).sum() > 0
-                sil_db = silhouette_score(Xs[labels_db != -1], labels_db[labels_db != -1]) if has_clusters else float("nan")
-
-                cdb1, cdb2 = st.columns(2)
-                with cdb1: st.metric("# Clústeres (≠-1)", n_clusters_db)
-                with cdb2: st.metric("Silhouette (sin ruido)", "N/A" if not has_clusters else f"{sil_db:.4f}")
-
-                # Tamaños (incluye ruido)
-                sizes_db = pd.Series(labels_db).value_counts().sort_index()
-                tabla_db = pd.DataFrame({
-                    "cluster": ["ruido (-1)" if i == -1 else int(i) for i in sizes_db.index],
-                    "n": sizes_db.values
-                })
-                st.write("**Tamaño de clústeres (DBSCAN)**")
-                st.dataframe(tabla_db, use_container_width=True, hide_index=True)
-
-            with col_db_r:
-                # Dispersión PCA coloreada por etiqueta DBSCAN
-                fig_db, ax_db = plt.subplots(figsize=(6.2, 4.2))
-                # Colorear ruido en negro y con marcador 'x'
-                mask_noise = labels_db == -1
-                if (~mask_noise).any():
-                    sc_db = ax_db.scatter(X2[~mask_noise, 0], X2[~mask_noise, 1],
-                                        c=labels_db[~mask_noise], s=20, alpha=0.85)
-                    handles, _ = sc_db.legend_elements(prop="colors", alpha=0.6)
-                    ax_db.legend(handles + [plt.Line2D([0], [0], marker='x', linestyle='None', label='Ruido', color='black')],
-                                [* [f"Cluster {i}" for i in sorted(set(labels_db) - {-1})], "Ruido"],
-                                title="Etiquetas", loc="best")
-                if mask_noise.any():
-                    ax_db.scatter(X2[mask_noise, 0], X2[mask_noise, 1], c="black", marker="x", s=20, alpha=0.7)
-                ax_db.set_xlabel("PCA 1")
-                ax_db.set_ylabel("PCA 2")
-                ax_db.set_title("DBSCAN – Proyección PCA (2D)")
-                st.pyplot(fig_db)
-    
     else:
         st.info("Si lo deseas, puedes subir un documento CSV o Excel con la información "
               "de un conjuntos de vinos para analizar la calidad del grupo. Incluye exactamente estas columnas "
